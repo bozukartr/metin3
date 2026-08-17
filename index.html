@@ -177,6 +177,15 @@ canvas#scene{position:absolute;inset:0;width:100%;height:100%;display:block}
   font-variant-numeric:tabular-nums}
 
 .locked{opacity:.42}
+.tabs{display:flex;gap:6px;margin-bottom:12px}
+.tabs button{flex:1;min-height:38px;border-radius:10px;border:1px solid var(--line);
+  background:rgba(0,0,0,.3);color:#c9b58f;font-family:Cinzel,serif;font-weight:700;
+  font-size:11px;letter-spacing:.5px}
+.tabs button.on{background:linear-gradient(180deg,#e6bb5c,#c1902d);color:#241a09;border-color:#f0d08a}
+.row.item{border-left-width:3px}
+.afx{font-size:10px;color:#9fd2bd;margin-top:3px;line-height:1.4}
+.slotk{font-size:9px;color:#7d715e;letter-spacing:.4px;text-transform:uppercase}
+.empty{padding:14px 10px;text-align:center;font-size:11px;color:#7d715e}
 .qbar{height:5px;border-radius:3px;background:#241d16;overflow:hidden;margin-top:5px;border:1px solid rgba(0,0,0,.5)}
 .qbar > i{display:block;height:100%;width:0%;border-radius:3px;background:linear-gradient(90deg,#4e8f74,#8fd3b4);transition:width .25s}
 .qbar.full > i{background:linear-gradient(90deg,#8a6a26,#e9bc55)}
@@ -462,6 +471,8 @@ function freshState(clsId){
     cls:clsId, lvl:1, exp:0, hp:1, yang:150, stone:6, book:0,
     st:{guc:0, day:0, cev:0, zek:0}, pts:0,
     gear:{silah:0,zirh:0,kask:0,kolye:0,bilezik:0,ayakkabi:0},
+    eq:{silah:null,zirh:null,kask:null,kolye:null,bilezik:null,ayakkabi:null},
+    bag:[], autoEquip:true, sold:0,
     zone:0, unlocked:0, kills:0, metins:0, totalKills:0,
     bossReady:false, bossDone:{}, bossKills:{},
     sk:[1,0,0,0], skcd:[0,0,0,0],
@@ -471,6 +482,85 @@ function freshState(clsId){
     ts:Date.now(), dpsSnap:10, mobHpSnap:30
   };
 }
+/* --- eşyalar --------------------------------------------------------------
+   Ekipman yükseltme seviyeleri ana ilerleme; düşen eşyalar bunun üstüne
+   yüzdesel bonus verir. Kayıt boyutu küçük kalsın diye alanlar kısa:
+   s = yuva, r = nadirlik, z = düştüğü bölge, af = nitelikler. */
+const RARITY = [
+  {n:"Sıradan",  c:"#9a9084", aff:1, mul:1.00, w:[62,44,26,12, 5, 2, 1, 0, 0]},
+  {n:"İyi",      c:"#7fc47f", aff:1, mul:1.55, w:[28,36,38,32,24,16,10, 6, 3]},
+  {n:"Nadir",    c:"#6aa8e0", aff:2, mul:2.25, w:[ 8,16,26,34,38,36,30,24,18]},
+  {n:"Efsanevi", c:"#b48ce8", aff:3, mul:3.20, w:[ 2, 4, 9,18,26,32,38,40,40]},
+  {n:"Ejder",    c:"#f0cd72", aff:4, mul:4.60, w:[ 0, 0, 1, 4, 7,14,21,30,39]}
+];
+const PREFIX = [
+  ["Paslı","Yıpranmış","Çatlak"],
+  ["Sağlam","Keskin","Dövme"],
+  ["Yeşim","Çelik","Ay"],
+  ["Gölge","Ejderha","Fırtına"],
+  ["Kadim","Kutsal","Cehennem"]
+];
+const AFFIX = [
+  {k:"atk",   n:"Saldırı",      base:2.2},
+  {k:"hp",    n:"Can",          base:3.0},
+  {k:"crit",  n:"Kritik şans",  base:1.1},
+  {k:"critD", n:"Kritik hasar", base:4.0},
+  {k:"aspd",  n:"Saldırı hızı", base:1.6},
+  {k:"yang",  n:"Yang",         base:3.5},
+  {k:"def",   n:"Savunma",      base:3.0}
+];
+const BAG_MAX = 24;
+
+function rollRarity(z, kind){
+  // derin bölgeler ve büyük düşmanlar üst nadirliklere kayar
+  const boost = kind==="boss" ? 2 : kind==="metin" ? 1 : 0;
+  const zi = clamp(z+boost, 0, 8);
+  let total=0; for(const r of RARITY) total += r.w[zi];
+  let x = Math.random()*total;
+  for(let i=0;i<RARITY.length;i++){ x -= RARITY[i].w[zi]; if(x<=0) return i; }
+  return 0;
+}
+function rollItem(z, kind){
+  const r = rollRarity(z, kind);
+  const slot = SLOTS[Math.floor(Math.random()*SLOTS.length)].k;
+  const pw = (1 + z*0.35) * RARITY[r].mul;
+  const pool = AFFIX.slice();
+  const af = [];
+  for(let i=0;i<RARITY[r].aff && pool.length;i++){
+    const a = pool.splice(Math.floor(Math.random()*pool.length),1)[0];
+    af.push({k:a.k, v: +(a.base*pw*rnd(0.8,1.2)).toFixed(1)});
+  }
+  return {s:slot, r, z, af};
+}
+function itemName(it){
+  const px = PREFIX[it.r][ (it.af.length + it.z + it.r) % PREFIX[it.r].length ];
+  return `${px} ${SLOTS.find(s=>s.k===it.s).n}`;
+}
+/* Karşılaştırma ve satış için tek sayı. Nitelikler farklı ölçeklerde
+   olduğu için kabaca "saldırıya çevrilmiş" ağırlıklar kullanılıyor. */
+const AF_WEIGHT = {atk:1.0, hp:0.45, crit:1.5, critD:0.35, aspd:1.3, yang:0.30, def:0.35};
+function itemScore(it){
+  if(!it) return 0;
+  let s=0; for(const a of it.af) s += a.v * (AF_WEIGHT[a.k]||0.5);
+  return s;
+}
+function itemValue(it){ return Math.round(itemScore(it) * 55 * (1 + it.z*1.4) + 40); }
+function afLabel(a){
+  const d = AFFIX.find(x=>x.k===a.k);
+  return `${d?d.n:a.k} +%${a.v.toFixed(1)}`;
+}
+
+/* Takılı eşyaların toplam bonusu (yüzde cinsinden). */
+function itemBonus(){
+  const b={atk:0,hp:0,crit:0,critD:0,aspd:0,yang:0,def:0};
+  if(!S.eq) return b;
+  for(const k in S.eq){
+    const it=S.eq[k]; if(!it || !Array.isArray(it.af)) continue;
+    for(const a of it.af) if(a.k in b) b[a.k] += a.v;
+  }
+  return b;
+}
+
 /* --- günlük görevler -----------------------------------------------------
    Üç hedef her gün yerel gece yarısı yenilenir. Hedefler ve ödüller
    üretildikleri anda sabitlenir; oyuncu bölge değiştirince kaymazlar. */
@@ -645,6 +735,17 @@ function calcStats(){
   const aspd = clamp((0.85 + gearVal("ayakkabi")*0.02 + S.st.cev*0.008) * m.aspd, 0.4, 4.2);
   const dodge = clamp(2 + S.st.cev*0.14 + (c.id==="ninja"?6:0), 0, 45);
   ST = {atk, def, maxhp, crit, critD, aspd, dodge, regen: maxhp*0.03*(c.id==="saman"?1.5:1)};
+
+  // takılı eşyaların yüzdesel bonusları en son uygulanır
+  const ib = itemBonus();
+  ST.atk   *= 1 + ib.atk/100;
+  ST.maxhp *= 1 + ib.hp/100;
+  ST.def   *= 1 + ib.def/100;
+  ST.aspd   = clamp(ST.aspd * (1 + ib.aspd/100), 0.4, 4.2);
+  ST.crit   = clamp(ST.crit + ib.crit, 0, 75);
+  ST.critD += ib.critD/100;
+  ST.regen  = ST.maxhp*0.03*(c.id==="saman"?1.5:1);
+  ST.yangB  = 1 + ib.yang/100;
   return ST;
 }
 function dps(){ return ST.atk*(1+ST.crit/100*(ST.critD-1))*ST.aspd; }
@@ -1200,7 +1301,7 @@ function kill(){
   haptic(kind==="mob"?12:38);
   beep(kind==="mob"?200:120,.22,"triangle",.06);
 
-  let yang = E.yang * cls().mul.yang * ruhMul() * (1+S.st.zek*0.004);
+  let yang = E.yang * cls().mul.yang * ruhMul() * (1+S.st.zek*0.004) * (ST.yangB||1);
   gainExp(E.exp * (1+S.st.zek*0.003));
   S.yang += yang;
   dailyProgress("yang", yang);
@@ -1235,10 +1336,85 @@ function kill(){
     if(Math.random()<0.09) { S.stone++; }
     if(S.zone>=2 && Math.random()<0.012){ S.book++; toast("Yetenek kitabı düştü  +1 📕","gold"); }
   }
+  rollDrop(kind, ex);
+
   S.dpsSnap = dps(); S.mobHpSnap = mobStats("mob").hp;
   E=null; respawn=0.42;
   $("ePlate").style.opacity="0";
   sheetDirty=true;
+}
+
+/* --- düşen eşya ---------------------------------------------------------- */
+const DROP_CHANCE = {mob:0.06, metin:0.35, boss:1};
+function rollDrop(kind, x){
+  if(Math.random() >= (DROP_CHANCE[kind]||0)) return;
+  const it = rollItem(S.zone, kind);
+  const rar = RARITY[it.r];
+
+  pushDmg(x, GY-100, itemName(it), rar.c, it.r>=3?16:13);
+  burst(x, GY-40, rar.c, S.lowFx?6:(10+it.r*6), 1+it.r*0.2);
+  if(it.r>=3){ haptic(26); beep(1040,.22,"sine",.05); shake=Math.max(shake,6); }
+
+  // otomatik kuşan: daha iyisi düşerse tak, eskisini çantaya koy
+  if(S.autoEquip && itemScore(it) > itemScore(S.eq[it.s])){
+    const old = S.eq[it.s];
+    S.eq[it.s] = it;
+    toast(`${itemName(it)} kuşanıldı`, it.r>=3?"gold":"good");
+    calcStats();
+    if(old) stash(old);
+  } else {
+    stash(it);
+  }
+  sheetDirty=true;
+}
+/* Çanta doluysa eşya kaybolmasın: kendiliğinden satılır. */
+function stash(it){
+  if(S.bag.length >= BAG_MAX){
+    const v = itemValue(it);
+    S.yang += v; S.sold += v;
+    toast(`Çanta dolu — ${itemName(it)} ${fmt(v)} 🪙 karşılığı satıldı`, "");
+    return;
+  }
+  S.bag.push(it);
+}
+function equipFromBag(i){
+  const it = S.bag[i]; if(!it) return;
+  const old = S.eq[it.s];
+  S.eq[it.s] = it;
+  S.bag.splice(i,1);
+  if(old) S.bag.push(old);
+  calcStats(); haptic(16); beep(700,.12,"sine",.05);
+  toast(`${itemName(it)} kuşanıldı`, "good");
+  renderGear(); syncHUD(); save();
+}
+function unequip(slot){
+  const it = S.eq[slot]; if(!it) return;
+  if(S.bag.length >= BAG_MAX){ toast("Çanta dolu", "bad"); return; }
+  S.bag.push(it); S.eq[slot]=null;
+  calcStats(); haptic(10);
+  renderGear(); syncHUD(); save();
+}
+function sellBag(i){
+  const it = S.bag[i]; if(!it) return;
+  const v = itemValue(it);
+  S.bag.splice(i,1);
+  S.yang += v; S.sold += v;
+  haptic(10); beep(520,.09,"square",.04);
+  toast(`Satıldı  +${fmt(v)} 🪙`, "gold");
+  renderGear(); syncHUD(); save();
+}
+/* Takılı olandan daha iyi olmayan her şeyi tek dokunuşta sat. */
+function sellJunk(){
+  let n=0, v=0;
+  S.bag = S.bag.filter(it=>{
+    if(itemScore(it) <= itemScore(S.eq[it.s])){ n++; v+=itemValue(it); return false; }
+    return true;
+  });
+  if(!n){ toast("Satılacak işe yaramaz eşya yok", ""); return; }
+  S.yang += v; S.sold += v;
+  haptic(20); beep(560,.14,"square",.05);
+  toast(`${n} eşya satıldı  +${fmt(v)} 🪙`, "gold");
+  renderGear(); syncHUD(); save();
 }
 
 function gainExp(n){
@@ -1355,7 +1531,10 @@ function syncHUD(){
 /* alt menüdeki "yapılacak var" işaretleri */
 function syncBadges(){
   // otomatik demirci açıkken nokta sürekli yanıp söneceği için bastırılıyor
-  const gearOk = !S.autoForge && SLOTS.some(sl => S.yang>=gearCost(sl.k) && S.stone>=gearStones(sl.k));
+  const upOk = !S.autoForge && SLOTS.some(sl => S.yang>=gearCost(sl.k) && S.stone>=gearStones(sl.k));
+  // çantada takılıdan iyi bir eşya varsa da işaret yansın
+  const bagOk = S.bag.some(it => itemScore(it) > itemScore(S.eq[it.s]));
+  const gearOk = upOk || bagOk;
   const skillOk = SKILL_DEF.some((d,i)=>{
     if(S.lvl < [1,8,16,26][i]) return false;
     const lv=S.sk[i];
@@ -1401,8 +1580,24 @@ NAVS.forEach(([b,s])=>{
 document.querySelectorAll("[data-close]").forEach(b=>b.addEventListener("click",()=>{haptic(6);openSheet(null);}));
 
 /* --- Demirci --- */
+let gearTab = "up";   // "up" = yükseltme, "inv" = envanter
 function renderGear(){
-  const b=$("gearBody"); let h="";
+  const b=$("gearBody");
+  const newBag = S.bag.filter(it=>itemScore(it)>itemScore(S.eq[it.s])).length;
+  let h=`<div class="tabs">
+    <button data-tab="up" class="${gearTab==="up"?"on":""}">YÜKSELTME</button>
+    <button data-tab="inv" class="${gearTab==="inv"?"on":""}">ENVANTER ${S.bag.length}/${BAG_MAX}${newBag?" •":""}</button>
+  </div>`;
+  h += gearTab==="inv" ? gearInvHtml() : gearUpHtml();
+  withScroll(b, ()=>{ b.innerHTML=h; });
+  b.querySelectorAll("[data-tab]").forEach(btn=>btn.addEventListener("click", ()=>{
+    gearTab = btn.dataset.tab; haptic(6); renderGear();
+  }));
+  if(gearTab==="inv") bindInv(b); else bindUp(b);
+}
+
+function gearUpHtml(){
+  let h="";
   h+=`<div class="sec">Ekipman yükseltme</div>`;
   h+=`<button class="btn wide ${S.autoForge?'':'ghost'}" id="autoForgeBtn">OTOMATİK DEMİRCİ: ${S.autoForge?"AÇIK":"KAPALI"}</button>
       <div class="hint" style="margin-bottom:10px">Açıkken en ucuz karşılanabilir parça 1.5 sn'de bir kendiliğinden yükseltilir.</div>`;
@@ -1429,13 +1624,76 @@ function renderGear(){
     </div>`;
   }
   h+=`<div class="hint">+3'ten sonra yükseltme başarısız olabilir. Başarısızlıkta seviye düşmez, sadece malzeme gider.<br>Yükseltme taşı 🔷 metin taşlarından ve canavarlardan düşer.</div>`;
-  withScroll(b, ()=>{ b.innerHTML=h; });
+  return h;
+}
+function bindUp(b){
   b.querySelectorAll("[data-up]").forEach(btn=>btn.addEventListener("click", ()=>tryUpgrade(btn.dataset.up)));
   $("autoForgeBtn").addEventListener("click", ()=>{
     S.autoForge=!S.autoForge; forgeT=0; haptic(10);
     toast(S.autoForge?"Otomatik demirci açık":"Otomatik demirci kapalı", S.autoForge?"good":"");
     renderGear(); syncHUD(); save();
   });
+}
+
+/* --- Envanter sekmesi --- */
+function itemRowHtml(it, action){
+  const r=RARITY[it.r], sl=SLOTS.find(s=>s.k===it.s);
+  const eqd = S.eq[it.s];
+  const diff = action==="bag" ? itemScore(it)-itemScore(eqd) : 0;
+  const tag = action==="bag"
+    ? (diff>0 ? `<span class="pill j">↑ daha iyi</span>` : diff<0 ? `<span class="pill r">↓ zayıf</span>` : "")
+    : "";
+  return `<div class="row item" style="border-left-color:${r.c}">
+    <div class="ic">${sl.em}</div>
+    <div class="body">
+      <div class="t1" style="color:${r.c}">${itemName(it)} ${tag}</div>
+      <div class="slotk">${r.n} · ${sl.n} · ${ZONES[it.z]?ZONES[it.z].name:"?"}</div>
+      <div class="afx">${it.af.map(afLabel).join(" · ")}</div>
+      ${action==="bag"?`<div class="t3">Satış: 🪙 ${fmt(itemValue(it))}</div>`:""}
+    </div>
+    ${action==="eq"
+      ? `<button class="btn sm ghost" data-un="${it.s}">ÇIKAR</button>`
+      : `<button class="btn sm" data-eq="${S.bag.indexOf(it)}">TAK</button>
+         <button class="btn sm ghost" data-sell="${S.bag.indexOf(it)}">SAT</button>`}
+  </div>`;
+}
+function gearInvHtml(){
+  const ib = itemBonus();
+  const parts = Object.keys(ib).filter(k=>ib[k]>0)
+    .map(k=>`${AFFIX.find(a=>a.k===k).n} +%${ib[k].toFixed(1)}`);
+  let h=`<div class="sec">Kuşanılı</div>`;
+  h+=`<button class="btn wide ${S.autoEquip?'':'ghost'}" id="autoEqBtn">OTOMATİK KUŞANMA: ${S.autoEquip?"AÇIK":"KAPALI"}</button>
+      <div class="hint" style="margin-bottom:10px">${parts.length?`Toplam bonus: ${parts.join(" · ")}`:"Henüz kuşanılı eşya yok."}</div>`;
+
+  let any=false;
+  for(const sl of SLOTS){
+    const it=S.eq[sl.k];
+    if(it){ any=true; h+=itemRowHtml(it,"eq"); }
+  }
+  if(!any) h+=`<div class="empty">Canavarlardan eşya düşer. Metin taşları ve bölge şefleri çok daha iyi eşya bırakır.</div>`;
+
+  h+=`<div class="sec">Çanta — ${S.bag.length}/${BAG_MAX}</div>`;
+  if(S.bag.length){
+    h+=`<button class="btn wide ghost sm" id="sellJunkBtn" style="margin-bottom:10px">İŞE YARAMAYANLARI SAT</button>`;
+    // en iyiden en kötüye: karar vermesi kolay olsun
+    const sorted = S.bag.slice().sort((a,b)=>itemScore(b)-itemScore(a));
+    for(const it of sorted) h+=itemRowHtml(it,"bag");
+  } else {
+    h+=`<div class="empty">Çanta boş.</div>`;
+  }
+  h+=`<div class="hint">Eşya bonusları yükseltme seviyelerinin üstüne yüzdesel eklenir. Toplam satıştan kazanılan: 🪙 ${fmt(S.sold||0)}</div>`;
+  return h;
+}
+function bindInv(b){
+  $("autoEqBtn").addEventListener("click", ()=>{
+    S.autoEquip=!S.autoEquip; haptic(10);
+    toast(S.autoEquip?"Otomatik kuşanma açık":"Otomatik kuşanma kapalı", S.autoEquip?"good":"");
+    renderGear(); save();
+  });
+  const sj=$("sellJunkBtn"); if(sj) sj.addEventListener("click", sellJunk);
+  b.querySelectorAll("[data-un]").forEach(x=>x.addEventListener("click",()=>unequip(x.dataset.un)));
+  b.querySelectorAll("[data-eq]").forEach(x=>x.addEventListener("click",()=>equipFromBag(+x.dataset.eq)));
+  b.querySelectorAll("[data-sell]").forEach(x=>x.addEventListener("click",()=>sellBag(+x.dataset.sell)));
 }
 /* Sadece durum değişikliği — hem elle hem otomatik yükseltme bunu kullanır. */
 function doUpgrade(k){
@@ -1724,7 +1982,10 @@ function ascend(){
     ruh: S.ruh+g, ascends: S.ascends+1, best: S.best,
     sk: S.sk.slice(), book: S.book, quests: S.quests,
     lt: S.lt, sfx: S.sfx, vib: S.vib, autoZone: S.autoZone, lowFx: S.lowFx,
-    daily: S.daily          // günlük görevler ve seri yükselişte korunur
+    daily: S.daily,         // günlük görevler ve seri yükselişte korunur
+    // kuşandığın kalır, çanta boşalır: yeni koşuya hızlı başlarsın ama
+    // birikmiş yedek eşya stoğunu taşıyamazsın
+    eq: S.eq, autoEquip: S.autoEquip, sold: S.sold
   };
   keep.autoForge = S.autoForge;
   keep.lt.ascends++;
@@ -1924,6 +2185,19 @@ function migrate(saved){
   if(!s.quests || typeof s.quests!=="object") s.quests={};
   if(!s.lt || typeof s.lt!=="object") s.lt=freshLifetime();
   s.lt = Object.assign(freshLifetime(), s.lt);
+  // eşya sistemi öncesi kayıtlar
+  if(!s.eq || typeof s.eq!=="object") s.eq={};
+  if(!Array.isArray(s.bag)) s.bag=[];
+  for(const sl of SLOTS){
+    const it=s.eq[sl.k];
+    if(!it || !Array.isArray(it.af) || typeof it.r!=="number" || !RARITY[it.r]){ s.eq[sl.k]=null; continue; }
+    // yuvası tutmayan eşya (elle düzenlenmiş kayıt) silinmesin, çantaya düşsün
+    if(it.s !== sl.k){ s.eq[sl.k]=null; if(SLOTS.some(x=>x.k===it.s)) s.bag.push(it); }
+  }
+  s.bag = s.bag.filter(it => it && Array.isArray(it.af) && typeof it.r==="number"
+                             && RARITY[it.r] && SLOTS.some(x=>x.k===it.s)).slice(0, BAG_MAX);
+  if(typeof s.autoEquip!=="boolean") s.autoEquip=true;
+  if(typeof s.sold!=="number" || !isFinite(s.sold)) s.sold=0;
   if(!Array.isArray(s.sk) || s.sk.length!==4) s.sk=[1,0,0,0];
   if(!Array.isArray(s.skcd) || s.skcd.length!==4) s.skcd=[0,0,0,0];
   // v1: tek "mute" bayrağı vardı → ses ve titreşim ayrıldı
