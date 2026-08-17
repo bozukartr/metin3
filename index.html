@@ -467,7 +467,7 @@ function freshState(clsId){
     sk:[1,0,0,0], skcd:[0,0,0,0],
     ruh:0, ascends:0, best:1,
     lt:freshLifetime(), quests:{},
-    autoZone:true, lowFx:false, sfx:true, vib:true,
+    autoZone:true, autoForge:false, lowFx:false, sfx:true, vib:true,
     ts:Date.now(), dpsSnap:10, mobHpSnap:30
   };
 }
@@ -570,6 +570,42 @@ function calcStats(){
   return ST;
 }
 function dps(){ return ST.atk*(1+ST.crit/100*(ST.critD-1))*ST.aspd; }
+
+/* --- canlı savaş sayacı ---------------------------------------------------
+   Kuramsal DPS ile gerçekte olan arasındaki farkı görmek için son 10 saniyeyi
+   1 saniyelik kovalarda tutuyoruz; böylece olay listesi büyümüyor. */
+const MET_N = 10;
+const MET = {dmg:new Array(MET_N).fill(0), kill:new Array(MET_N).fill(0),
+             i:0, acc:0, hits:0, crits:0, peak:0};
+function meterTick(dt){
+  MET.acc += dt;
+  while(MET.acc >= 1){
+    MET.acc -= 1;
+    MET.i = (MET.i+1) % MET_N;
+    MET.dmg[MET.i] = 0;
+    MET.kill[MET.i] = 0;
+  }
+}
+function meterHit(d, crit){
+  MET.dmg[MET.i] += d;
+  MET.hits++; if(crit) MET.crits++;
+}
+function meterKill(){ MET.kill[MET.i] += 1; }
+function meterDps(){
+  let s=0; for(let i=0;i<MET_N;i++) s+=MET.dmg[i];
+  const v = s/MET_N;
+  if(v>MET.peak) MET.peak=v;
+  return v;
+}
+function meterKpm(){
+  let s=0; for(let i=0;i<MET_N;i++) s+=MET.kill[i];
+  return s*60/MET_N;
+}
+function meterCrit(){ return MET.hits ? MET.crits/MET.hits*100 : 0; }
+function meterReset(){
+  MET.dmg.fill(0); MET.kill.fill(0);
+  MET.i=0; MET.acc=0; MET.hits=0; MET.crits=0; MET.peak=0;
+}
 
 function mobStats(kind){
   const z=S.zone;
@@ -904,6 +940,8 @@ function loop(ts){
   const dt = Math.min((ts-last)/1000 || 0, 0.05);
   last=ts; tSec+=dt; scroll+=dt*11;
   S.lt.time += dt;
+  meterTick(dt);
+  autoForgeStep(dt);
 
   step(dt);
   render(tSec, dt);
@@ -999,6 +1037,7 @@ function hitMob(dmg, crit, isSkill){
   d = Math.max(1, d * (1 - E.mit));
   E.hp -= d;
   E.hurt = 1;
+  meterHit(d, crit);
   pushDmg(E.x + rnd(-14,14), GY-58+rnd(-8,8),
     (crit?"✦ ":"")+fmt(d), crit?"#ffd166":(isSkill?"#b48ce8":"#fff2dd"), crit?21:15);
   burst(E.x, GY-30, crit?"#ffd166":"#e0c8a0", crit?12:5, crit?1.3:1);
@@ -1078,6 +1117,7 @@ function kill(){
   pushDmg(ex, GY-78, "+"+fmt(yang)+" 🪙", "#f0cd72", 15);
 
   S.totalKills++;
+  meterKill();
 
   if(kind==="metin"){
     const st = 2+Math.floor(Math.random()*3)+Math.floor(S.zone/2);
@@ -1221,7 +1261,8 @@ function syncHUD(){
 
 /* alt menüdeki "yapılacak var" işaretleri */
 function syncBadges(){
-  const gearOk = SLOTS.some(sl => S.yang>=gearCost(sl.k) && S.stone>=gearStones(sl.k));
+  // otomatik demirci açıkken nokta sürekli yanıp söneceği için bastırılıyor
+  const gearOk = !S.autoForge && SLOTS.some(sl => S.yang>=gearCost(sl.k) && S.stone>=gearStones(sl.k));
   const skillOk = SKILL_DEF.some((d,i)=>{
     if(S.lvl < [1,8,16,26][i]) return false;
     const lv=S.sk[i];
@@ -1270,6 +1311,8 @@ document.querySelectorAll("[data-close]").forEach(b=>b.addEventListener("click",
 function renderGear(){
   const b=$("gearBody"); let h="";
   h+=`<div class="sec">Ekipman yükseltme</div>`;
+  h+=`<button class="btn wide ${S.autoForge?'':'ghost'}" id="autoForgeBtn">OTOMATİK DEMİRCİ: ${S.autoForge?"AÇIK":"KAPALI"}</button>
+      <div class="hint" style="margin-bottom:10px">Açıkken en ucuz karşılanabilir parça 1.5 sn'de bir kendiliğinden yükseltilir.</div>`;
   for(const sl of SLOTS){
     const L=S.gear[sl.k], cost=gearCost(sl.k), st=gearStones(sl.k), ch=upChance(sl.k);
     const can = S.yang>=cost && S.stone>=st;
@@ -1295,18 +1338,30 @@ function renderGear(){
   h+=`<div class="hint">+3'ten sonra yükseltme başarısız olabilir. Başarısızlıkta seviye düşmez, sadece malzeme gider.<br>Yükseltme taşı 🔷 metin taşlarından ve canavarlardan düşer.</div>`;
   withScroll(b, ()=>{ b.innerHTML=h; });
   b.querySelectorAll("[data-up]").forEach(btn=>btn.addEventListener("click", ()=>tryUpgrade(btn.dataset.up)));
+  $("autoForgeBtn").addEventListener("click", ()=>{
+    S.autoForge=!S.autoForge; forgeT=0; haptic(10);
+    toast(S.autoForge?"Otomatik demirci açık":"Otomatik demirci kapalı", S.autoForge?"good":"");
+    renderGear(); syncHUD(); save();
+  });
 }
-function tryUpgrade(k){
+/* Sadece durum değişikliği — hem elle hem otomatik yükseltme bunu kullanır. */
+function doUpgrade(k){
   const cost=gearCost(k), st=gearStones(k);
-  if(S.yang<cost || S.stone<st) return;
+  if(S.yang<cost || S.stone<st) return null;
   S.yang-=cost; S.stone-=st;
   const ok = Math.random() < upChance(k);
+  if(ok) S.gear[k]++;
+  calcStats();
+  return ok;
+}
+function tryUpgrade(k){
+  const ok = doUpgrade(k);
+  if(ok===null) return;
   const fx=$("forgeFx");
-  fx.innerHTML = `<div class="forge-word" style="color:${ok?'#f0cd72':'#d0503a'}">${ok?'+'+(S.gear[k]+1):'KIRILDI'}</div>`;
+  fx.innerHTML = `<div class="forge-word" style="color:${ok?'#f0cd72':'#d0503a'}">${ok?'+'+S.gear[k]:'KIRILDI'}</div>`;
   fx.classList.add("on");
   setTimeout(()=>fx.classList.remove("on"), 960);
   if(ok){
-    S.gear[k]++;
     haptic(28); beep(920,.22,"sine",.06);
     burst(W*0.5, H*0.42, "#f0cd72", 34, 1.7);
     toast(`${SLOTS.find(s=>s.k===k).n} +${S.gear[k]}`, "gold");
@@ -1314,7 +1369,34 @@ function tryUpgrade(k){
     haptic([30,50,30]); beep(140,.3,"sawtooth",.06); shake=8;
     toast("Yükseltme başarısız", "bad");
   }
-  calcStats(); renderGear(); syncHUD(); save();
+  renderGear(); syncHUD(); save();
+}
+
+/* --- Otomatik demirci ---------------------------------------------------
+   En ucuz karşılanabilir parçayı yükseltir; böylece yang tek bir pahalı
+   parçaya yığılmak yerine dengeli dağılır. Büyük ekran efekti ve bildirim
+   üretmez, yalnızca sahnede küçük bir yazı gösterir. */
+let forgeT=0;
+function autoForgeStep(dt){
+  if(!S.autoForge) return;
+  forgeT-=dt; if(forgeT>0) return;
+  forgeT=1.5;
+  let best=null, bestCost=Infinity;
+  for(const sl of SLOTS){
+    const cost=gearCost(sl.k), st=gearStones(sl.k);
+    if(S.yang>=cost && S.stone>=st && cost<bestCost){ best=sl.k; bestCost=cost; }
+  }
+  if(!best) return;
+  const before=S.gear[best];
+  const ok=doUpgrade(best);
+  if(ok===null) return;
+  if(ok){
+    pushDmg(W*0.5, GY-100, `${SLOTS.find(s=>s.k===best).n} +${before+1}`, "#f0cd72", 14);
+    burst(W*0.5, GY-60, "#f0cd72", S.lowFx?6:14, 1.1);
+  } else {
+    pushDmg(W*0.5, GY-100, "kırıldı", "#d0503a", 13);
+  }
+  sheetDirty=true;
 }
 
 /* --- Yetenekler --- */
@@ -1431,6 +1513,13 @@ function renderChar(){
     <div class="stat-cell"><div class="k">Can yenileme</div><div class="v">${fmt(ST.regen)}/sn</div></div>
     <div class="stat-cell"><div class="k">Saniyelik öldürme</div><div class="v">${(dps()*(1-mobMit("mob"))/Math.max(1,mobStats("mob").hp)).toFixed(2)}</div></div>
   </div>`;
+  h+=`<div class="sec">Savaş sayacı — son 10 sn</div><div class="stat-grid">
+    <div class="stat-cell"><div class="k">Gerçek DPS</div><div class="v">${fmt(meterDps())}</div></div>
+    <div class="stat-cell"><div class="k">En yüksek DPS</div><div class="v">${fmt(MET.peak)}</div></div>
+    <div class="stat-cell"><div class="k">Dakikada öldürme</div><div class="v">${meterKpm().toFixed(1)}</div></div>
+    <div class="stat-cell"><div class="k">Ölçülen kritik</div><div class="v">%${meterCrit().toFixed(1)}</div></div>
+  </div>
+  <div class="hint">Kuramsal "saniyelik hasar" düşman zırhını saymaz; gerçek DPS ölçülen değerdir.</div>`;
   h+=`<div class="sec">Puan dağıt — kalan: ${S.pts}</div>`;
   for(const [k,n,d] of STATS){
     h+=`<div class="row">
@@ -1445,7 +1534,7 @@ function renderChar(){
   const gain=ascendGain();
   h+=`<div class="row"><div class="ic">🐲</div><div class="body">
     <div class="t1">Ruh Taşı <span class="plus">${S.ruh}</span></div>
-    <div class="t2">Her taş: +%6 saldırı ve yang, +%3 can. Şu an +%${(S.ruh*6)}.</div>
+    <div class="t2">Her taş: +%6 saldırı ve yang, +%3 can, +30 dk çevrimdışı süre. Şu an +%${(S.ruh*6)} · çevrimdışı tavan ${offlineCapH()} sa.</div>
     <div class="t3">${S.lvl>=60? `Şimdi yükselirsen +${gain} ruh taşı kazanırsın.` : `Seviye 60 gerekiyor (şu an ${S.lvl}).`}</div>
   </div></div>
   <button class="btn wide danger" id="ascBtn" ${S.lvl>=60&&gain>0?"":"disabled"}>RUH YÜKSELİŞİ — SIFIRLA</button>
@@ -1454,6 +1543,8 @@ function renderChar(){
   <button class="btn wide ghost" data-tg="sfx">SES: ${S.sfx?"AÇIK":"KAPALI"}</button>
   <button class="btn wide ghost" data-tg="vib">TİTREŞİM: ${S.vib?"AÇIK":"KAPALI"}</button>
   <button class="btn wide ghost" data-tg="autoZone">OTOMATİK BÖLGE GEÇİŞİ: ${S.autoZone?"AÇIK":"KAPALI"}</button>
+  <button class="btn wide ghost" data-tg="autoForge">OTOMATİK DEMİRCİ: ${S.autoForge?"AÇIK":"KAPALI"}</button>
+  <div class="hint">Otomatik demirci 1.5 sn'de bir en ucuz karşılanabilir parçayı yükseltir. Yang biriktirmek istiyorsan kapalı tut.</div>
   <button class="btn wide ghost" data-tg="lowFx">DÜŞÜK EFEKT MODU: ${S.lowFx?"AÇIK":"KAPALI"}</button>
   <div class="hint">Düşük efekt modu parçacıkları azaltır, zayıf telefonlarda akıcılığı artırır.</div>
   <button class="btn wide danger" id="wipeBtn">${wipeArmed?"EMİN MİSİN? DOKUN VE SİL":"KAYDI SIFIRLA"}</button>`;
@@ -1499,9 +1590,10 @@ function ascend(){
     sk: S.sk.slice(), book: S.book, quests: S.quests,
     lt: S.lt, sfx: S.sfx, vib: S.vib, autoZone: S.autoZone, lowFx: S.lowFx
   };
+  keep.autoForge = S.autoForge;
   keep.lt.ascends++;
   S = Object.assign(freshState(S.cls), keep);
-  calcStats(); S.hp=ST.maxhp;
+  calcStats(); S.hp=ST.maxhp; meterReset();
   E=null; respawn=0.4; initAmb(); syncIdentity();
   toast(`Ruh Yükselişi! +${g} ruh taşı`, "gold");
   haptic([40,60,40,60,80]); beep(1000,.5,"sine",.06);
@@ -1616,8 +1708,10 @@ document.addEventListener("visibilitychange", ()=>{
   if(off && off.kills>0) applyOffline(off);
 });
 
+/* Çevrimdışı tavan ruh taşıyla büyür: taş başına +30 dk, en fazla 24 saat. */
+function offlineCapH(){ return clamp(12 + S.ruh*0.5, 12, 24); }
 function offlineGains(){
-  const away = clamp((Date.now()-S.ts)/1000, 0, 12*3600);
+  const away = clamp((Date.now()-S.ts)/1000, 0, offlineCapH()*3600);
   if(away<90) return null;
   const kps = clamp(S.dpsSnap/Math.max(1,S.mobHpSnap), 0, 4); // saniyedeki öldürme
   const kills = kps*away*0.55;
