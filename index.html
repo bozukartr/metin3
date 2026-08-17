@@ -471,6 +471,84 @@ function freshState(clsId){
     ts:Date.now(), dpsSnap:10, mobHpSnap:30
   };
 }
+/* --- günlük görevler -----------------------------------------------------
+   Üç hedef her gün yerel gece yarısı yenilenir. Hedefler ve ödüller
+   üretildikleri anda sabitlenir; oyuncu bölge değiştirince kaymazlar. */
+const DAILY_POOL = [
+  {k:"kills",  em:"⚔",  n:"Avlan",        d:n=>`${fmt(n)} canavar devir`},
+  {k:"metins", em:"🔷", n:"Taş Kır",      d:n=>`${fmt(n)} metin taşı kır`},
+  {k:"bosses", em:"♛",  n:"Şef Avı",      d:n=>`${fmt(n)} bölge şefi devir`},
+  {k:"ups",    em:"🔨", n:"Örs Başında",  d:n=>`${fmt(n)} yükseltme dene`},
+  {k:"yang",   em:"🪙", n:"Kazanç",       d:n=>`${fmt(n)} yang topla`},
+  {k:"dmg",    em:"💥", n:"Yıkım",        d:n=>`${fmt(n)} hasar ver`}
+];
+function dayKey(t){
+  const d = t ? new Date(t) : new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+function msToMidnight(){
+  const n=new Date(), m=new Date(n); m.setHours(24,0,0,0);
+  return m-n;
+}
+/* aynı gün içinde yeniden yüklemede aynı görevler çıksın diye tarihten türetilen seçim */
+function pickDaily(seedStr, count){
+  let s=0; for(let i=0;i<seedStr.length;i++) s=(s*31+seedStr.charCodeAt(i))>>>0;
+  const pool=[...Array(DAILY_POOL.length).keys()], out=[];
+  while(out.length<count && pool.length){
+    s=(s*1103515245+12345)&0x7fffffff;
+    out.push(pool.splice(s%pool.length,1)[0]);
+  }
+  return out;
+}
+function dailyTarget(k){
+  const z=S.zone;
+  if(k==="kills")  return 40 + z*12;
+  if(k==="metins") return 3 + Math.floor(z/2);
+  if(k==="bosses") return 1;
+  if(k==="ups")    return 6;
+  if(k==="yang")   return Math.max(600, Math.round(mobStats("mob").yang*90));
+  if(k==="dmg")    return Math.max(1500, Math.round(dps()*160));
+  return 10;
+}
+function dailyReward(k, streak){
+  const z=S.zone, mul = 1 + Math.min(streak,7)*0.1;
+  return {
+    yang:  Math.round(mobStats("mob").yang*140*mul),
+    stone: Math.round((4+z*2)*mul),
+    book:  (k==="bosses"||k==="metins") ? 1 : 0
+  };
+}
+/* Gün değiştiyse yeni görevleri üret ve seriyi güncelle. */
+function ensureDaily(){
+  const today = dayKey();
+  // bozuk/eksik kayıtta sıfırdan üret
+  if(S.daily && (!Array.isArray(S.daily.tasks) || S.daily.tasks.length!==3)) S.daily = null;
+  if(S.daily && S.daily.day === today) return false;
+
+  let streak = 0;
+  if(S.daily){
+    const yest = dayKey(Date.now() - 86400000);
+    // seri yalnızca dün üç görevin üçü de alındıysa sürer
+    streak = (S.daily.day === yest && S.daily.tasks.every(t=>t.got)) ? (S.daily.streak||0)+1 : 0;
+  }
+  S.daily = {
+    day: today, streak,
+    tasks: pickDaily(today + "|" + S.cls, 3).map(i=>{
+      const k = DAILY_POOL[i].k;
+      return {k, need: dailyTarget(k), prog: 0, got: false, rw: dailyReward(k, streak)};
+    })
+  };
+  return true;
+}
+function dailyProgress(k, amount){
+  if(!S.daily) return;
+  for(const t of S.daily.tasks){
+    if(t.k===k && !t.got && t.prog < t.need) t.prog += amount;
+  }
+}
+function dailyReady(t){ return !t.got && t.prog >= t.need; }
+function anyDailyReady(){ return !!(S.daily && S.daily.tasks.some(dailyReady)); }
+
 function questDone(q){ return !!(S.quests && S.quests[q.id]); }
 function questReady(q){ return !questDone(q) && q.p(S) >= q.need; }
 function anyQuestReady(){ return QUESTS.some(questReady); }
@@ -922,7 +1000,7 @@ function drawMob(m,t){
 let last=0, tSec=0, saveT=0, uiT=0, running=false;
 /* Panel yenileme: her öldürmede innerHTML'i yeniden kurmak parmağın altındaki
    düğmeyi ve kaydırma konumunu bozuyordu. Artık kısıtlanmış ve dokunma sırasında ertelenmiş. */
-let sheetDirty=false, sheetT=0, pointerHeld=false, pointerGrace=null;
+let sheetDirty=false, sheetT=0, pointerHeld=false, pointerGrace=null, dayT=20;
 function holdPointer(){ pointerHeld=true; clearTimeout(pointerGrace); }
 /* Parmak kalktıktan sonra da kısa süre bekle: pointerup ile click arasında
    panel yeniden çizilirse basılan düğme DOM'dan kopar ve dokunuş boşa gider. */
@@ -942,6 +1020,16 @@ function loop(ts){
   S.lt.time += dt;
   meterTick(dt);
   autoForgeStep(dt);
+  // oyun açık kalırken gece yarısını geçerse görevler yenilensin
+  dayT-=dt;
+  if(dayT<=0){
+    dayT=20;
+    if(ensureDaily()){
+      toast("Günlük görevler yenilendi", "good");
+      if(sheetOpen==="sh-quest") sheetDirty=true;
+      save();
+    }
+  }
 
   step(dt);
   render(tSec, dt);
@@ -1038,6 +1126,7 @@ function hitMob(dmg, crit, isSkill){
   E.hp -= d;
   E.hurt = 1;
   meterHit(d, crit);
+  dailyProgress("dmg", d);
   pushDmg(E.x + rnd(-14,14), GY-58+rnd(-8,8),
     (crit?"✦ ":"")+fmt(d), crit?"#ffd166":(isSkill?"#b48ce8":"#fff2dd"), crit?21:15);
   burst(E.x, GY-30, crit?"#ffd166":"#e0c8a0", crit?12:5, crit?1.3:1);
@@ -1114,6 +1203,7 @@ function kill(){
   let yang = E.yang * cls().mul.yang * ruhMul() * (1+S.st.zek*0.004);
   gainExp(E.exp * (1+S.st.zek*0.003));
   S.yang += yang;
+  dailyProgress("yang", yang);
   pushDmg(ex, GY-78, "+"+fmt(yang)+" 🪙", "#f0cd72", 15);
 
   S.totalKills++;
@@ -1122,6 +1212,7 @@ function kill(){
   if(kind==="metin"){
     const st = 2+Math.floor(Math.random()*3)+Math.floor(S.zone/2);
     S.stone += st; S.metins++; S.kills++; S.lt.metins++;
+    dailyProgress("metins", 1);
     toast(`Metin Taşı kırıldı  +${st} 🔷`, "gold");
     if(S.metins>=killsToBoss() && !S.bossDone[S.zone]) { S.bossReady=true; toast("Bölge şefi belirdi!", "bad"); }
   } else if(kind==="boss"){
@@ -1129,6 +1220,7 @@ function kill(){
     S.bossReady=false; S.bossDone[S.zone]=true; S.metins=0;
     S.bossKills[S.zone] = (S.bossKills[S.zone]||0)+1;
     S.lt.bosses++;
+    dailyProgress("bosses", 1);
     const bk = first?2:1;
     S.book += bk; S.stone += first ? 8+S.zone*3 : 4+S.zone*2;
     toast(`Bölge şefi devrildi!  +${bk} 📕`, "good");
@@ -1139,6 +1231,7 @@ function kill(){
     }
   } else {
     S.kills++; S.lt.kills++;
+    dailyProgress("kills", 1);
     if(Math.random()<0.09) { S.stone++; }
     if(S.zone>=2 && Math.random()<0.012){ S.book++; toast("Yetenek kitabı düştü  +1 📕","gold"); }
   }
@@ -1270,7 +1363,7 @@ function syncBadges(){
   });
   $("dotGear").classList.toggle("on", gearOk);
   $("dotSkill").classList.toggle("on", skillOk);
-  $("dotQuest").classList.toggle("on", anyQuestReady());
+  $("dotQuest").classList.toggle("on", anyQuestReady() || anyDailyReady());
   $("dotChar").classList.toggle("on", S.pts>0);
 }
 
@@ -1349,6 +1442,7 @@ function doUpgrade(k){
   const cost=gearCost(k), st=gearStones(k);
   if(S.yang<cost || S.stone<st) return null;
   S.yang-=cost; S.stone-=st;
+  dailyProgress("ups", 1);
   const ok = Math.random() < upChance(k);
   if(ok) S.gear[k]++;
   calcStats();
@@ -1448,9 +1542,34 @@ function rewardText(rw){
 }
 function renderQuests(){
   const b=$("questBody");
+  ensureDaily();
+  let h="";
+
+  // --- günlük görevler ---
+  const dReady=S.daily.tasks.filter(dailyReady).length;
+  const dGot=S.daily.tasks.filter(t=>t.got).length;
+  h+=`<div class="sec">Günlük görevler — ${dGot}/3${S.daily.streak?` · ${S.daily.streak} günlük seri`:""}</div>`;
+  S.daily.tasks.forEach((t,i)=>{
+    const tpl=DAILY_POOL.find(x=>x.k===t.k) || DAILY_POOL[0];
+    const pct=clamp(t.prog/t.need*100,0,100);
+    const can=dailyReady(t);
+    h+=`<div class="row ${t.got?'done':''}">
+      <div class="ic">${tpl.em}</div>
+      <div class="body">
+        <div class="t1">${tpl.n} ${t.got?'<span class="pill j">alındı ✓</span>':can?'<span class="pill g">hazır</span>':''}</div>
+        <div class="t2">${tpl.d(t.need)}</div>
+        <div class="qbar ${pct>=100?'full':''}"><i style="width:${pct}%"></i></div>
+        <div class="t3">${fmt(Math.min(t.prog,t.need))} / ${fmt(t.need)} · ${rewardText(t.rw)}</div>
+      </div>
+      ${t.got?'':`<button class="btn sm" data-d="${i}" ${can?'':'disabled'}>AL</button>`}
+    </div>`;
+  });
+  h+=`<div class="hint">Yenilenmesine ${fmtTime(msToMidnight()/1000)} var. Üç görevi de alırsan seri büyür; her seri günü ödülleri %10 artırır (en fazla %70).</div>`;
+
+  // --- başarımlar ---
   const ready=QUESTS.filter(questReady).length;
   const done=QUESTS.filter(questDone).length;
-  let h=`<div class="sec">Başarımlar — ${done}/${QUESTS.length} tamamlandı${ready?` · ${ready} ödül hazır`:""}</div>`;
+  h+=`<div class="sec">Başarımlar — ${done}/${QUESTS.length} tamamlandı${ready?` · ${ready} ödül hazır`:""}</div>`;
   for(const q of QUESTS){
     const cur=Math.max(0, q.p(S)), ok=questDone(q), can=questReady(q);
     const pct=clamp(cur/q.need*100,0,100);
@@ -1476,16 +1595,32 @@ function renderQuests(){
   <div class="hint">Başarımlar ruh yükselişinde sıfırlanmaz.</div>`;
   withScroll(b, ()=>{ b.innerHTML=h; });
   b.querySelectorAll("[data-q]").forEach(btn=>btn.addEventListener("click",()=>claimQuest(btn.dataset.q)));
+  b.querySelectorAll("[data-d]").forEach(btn=>btn.addEventListener("click",()=>claimDaily(+btn.dataset.d)));
+}
+function grantReward(rw){
+  if(rw.yang)  S.yang += rw.yang;
+  if(rw.stone) S.stone += rw.stone;
+  if(rw.book)  S.book += rw.book;
+  if(rw.pts)   S.pts += rw.pts;
+}
+function claimDaily(i){
+  const t = S.daily && S.daily.tasks[i];
+  if(!t || !dailyReady(t)) return;
+  t.got = true;
+  grantReward(t.rw);
+  haptic(24); beep(820,.18,"sine",.055);
+  burst(W*0.5, H*0.45, "#8fd3b4", 22, 1.3);
+  const tpl=DAILY_POOL.find(x=>x.k===t.k);
+  toast(`${tpl?tpl.n:"Günlük"} — ${rewardText(t.rw)}`, "good");
+  if(S.daily.tasks.every(x=>x.got)) toast("Günün üç görevi tamam! Seri sürüyor.", "gold");
+  renderQuests(); syncHUD(); save();
 }
 function claimQuest(id){
   const q=QUESTS.find(x=>x.id===id);
   if(!q || !questReady(q)) return;
   S.quests[q.id]=1;
   const rw=q.rw;
-  if(rw.yang)  S.yang += rw.yang;
-  if(rw.stone) S.stone += rw.stone;
-  if(rw.book)  S.book += rw.book;
-  if(rw.pts)   S.pts += rw.pts;
+  grantReward(rw);
   haptic(24); beep(880,.18,"sine",.055);
   burst(W*0.5, H*0.45, "#f0cd72", 26, 1.4);
   toast(`${q.n} — ${rewardText(rw)}`, "gold");
@@ -1588,7 +1723,8 @@ function ascend(){
   const keep = {
     ruh: S.ruh+g, ascends: S.ascends+1, best: S.best,
     sk: S.sk.slice(), book: S.book, quests: S.quests,
-    lt: S.lt, sfx: S.sfx, vib: S.vib, autoZone: S.autoZone, lowFx: S.lowFx
+    lt: S.lt, sfx: S.sfx, vib: S.vib, autoZone: S.autoZone, lowFx: S.lowFx,
+    daily: S.daily          // günlük görevler ve seri yükselişte korunur
   };
   keep.autoForge = S.autoForge;
   keep.lt.ascends++;
@@ -1772,6 +1908,7 @@ function begin(){
   calcStats();
   if(!isFinite(S.hp) || S.hp<=0) S.hp=ST.maxhp;
   S.hp = clamp(S.hp, 1, ST.maxhp);
+  ensureDaily();
   E=null; respawn=0.3; deathTimer=0;
   pAnim={t:0, atk:0, hurt:0, dead:0};
   $("deathModal").classList.add("hide");
