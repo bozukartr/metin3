@@ -119,46 +119,53 @@ saniyelik öldürme hızı eklendi. Görevler panelinde ömür boyu istatistikle
 
 ## 3. Sıradaki yükseltme fikirleri
 
-### 3.1 Yüksek etki / düşük maliyet
+### 3.0 Tamamlananlar
 
-1. **Envanter ve eşya düşürme.** Canavarlardan rastgele nitelikli (`+%X kritik`,
-   `+%Y yang`) eşyalar düşsün; oyuncu takıp değiştirsin. Şu anda ekipman
-   yalnızca bir sayaç; düşen eşya her savaşa küçük bir sürpriz katar.
-2. **Günlük görevler.** Mevcut başarım altyapısı hazır; günlük sıfırlanan 3
-   hedef (ör. "50 canavar devir", "2 metin kır") geri dönüş sebebi yaratır.
-3. **Otomatik yükseltme.** "Yang X'in üstündeyken en ucuz eşyayı yükselt"
-   anahtarı; boşta oynanışın en çok istenen kolaylığı.
-4. **Savaş günlüğü / hasar sayacı.** Son 10 saniyenin gerçek DPS'i, kritik oranı
-   ve öldürme hızı; oyuncunun yükseltmelerin etkisini görmesini sağlar.
-5. **Çevrimdışı süre yükseltmesi.** 12 saatlik tavan ruh taşıyla artsın
-   (ör. taş başına +30 dk).
+Aşağıdakiler ayrı PR'larla eklendi:
+
+- ✅ **Otomatik demirci** (#2) — 1.5 sn'de bir en ucuz karşılanabilir parçayı
+  yükseltir.
+- ✅ **Savaş sayacı** (#2) — son 10 saniyenin gerçek DPS'i, en yüksek DPS,
+  dakikada öldürme, ölçülen kritik oranı.
+- ✅ **Çevrimdışı süre yükseltmesi** (#2) — ruh taşı başına +30 dk, 12→24 saat.
+- ✅ **Günlük görevler ve seri** (#3) — her gün üç hedef, seri ödülleri %70'e
+  kadar artırır.
+- ✅ **Envanter ve eşya düşürme** (#4) — beş nadirlik, yedi nitelik türü,
+  otomatik kuşanma, toplu satış.
+
+### 3.1 Sıradaki — yüksek etki
+
+1. **Set bonusu.** Aynı nadirlikten 3/6 parça kuşanınca eşik bonusu. Envanter
+   altyapısı hazır olduğu için ucuz; eşya toplamaya yön verir.
+2. **Eşya basma / birleştirme.** İki eşyayı birleştirip nitelik aktarma ya da
+   yükseltme taşıyla eşya niteliği yeniden atma. Çantanın uzun vadeli anlamı
+   olur.
+3. **Yetenek elle kullanım seçeneği.** Otomatik kullanımın yanında yetenek
+   simgesine dokunarak erken tetikleme.
 
 ### 3.2 Orta maliyet
 
-6. **Evcil hayvan / ejder yoldaşı.** Kendi seviyesi ve beslenme kaynağı olan,
+4. **Evcil hayvan / ejder yoldaşı.** Kendi seviyesi ve beslenme kaynağı olan,
    pasif hasar veya yang bonusu sağlayan bir yoldaş. Metin2 ruhuna çok uygun.
-7. **Kuşanma ve set bonusu.** Aynı sete ait 3/6 parça +X kritik gibi eşikler.
-8. **Ruh ağacı.** Ruh taşları düz çarpan yerine harcanabilir puan olsun:
-   çevrimdışı verim, yükseltme başarı şansı, metin düşürme miktarı gibi
-   dallar. Yükselişi bir seçim haline getirir.
-9. **Zindan / dalga modu.** Süreli, artan zorlukta dalgalar; sadece kitap ve
-   nadir malzeme veren ayrı bir kaynak.
-10. **Elementler ve zayıflıklar.** Sınıf ve canavar tipleri arasında taş-kâğıt-
-    makas ilişkisi; bölge seçimine taktik katar.
-11. **Yetenek elle kullanım seçeneği.** Otomatik kullanımın yanında, yetenek
-    simgesine dokunarak erken tetikleme.
+5. **Ruh ağacı.** Ruh taşları düz çarpan yerine harcanabilir puan olsun:
+   çevrimdışı verim, yükseltme başarı şansı, eşya düşme şansı gibi dallar.
+   Yükselişi bir seçim haline getirir.
+6. **Zindan / dalga modu.** Süreli, artan zorlukta dalgalar; kitap ve nadir
+   malzeme veren ayrı bir kaynak.
+7. **Elementler ve zayıflıklar.** Sınıf ve canavar tipleri arasında taş-kâğıt-
+   makas ilişkisi; bölge seçimine taktik katar.
 
 ### 3.3 Uzun vadeli
 
-12. **PWA / çevrimdışı çalışma.** `manifest.json` + service worker ile ana
-    ekrana eklenebilir, internetsiz açılabilir hale getirme. Şu anda yazı
-    tipleri Google Fonts'tan çekiliyor; bunları gömmek ilk adım olur.
-13. **Bulut kaydı.** Kayıt dizesi dışa/içe aktarma (kopyalanabilir metin) en
-    ucuz çözüm; sonrasında hesap tabanlı senkron.
-14. **Sıralama tablosu.** En yüksek seviye / en çok yükseliş.
-15. **Sınıf başına özgün yetenek görselleri.** Şu anda dört sınıf aynı dört
+8. **PWA / çevrimdışı çalışma.** `manifest.json` + service worker ile ana
+   ekrana eklenebilir, internetsiz açılabilir hale getirme. Şu anda yazı
+   tipleri Google Fonts'tan çekiliyor; bunları gömmek ilk adım olur.
+9. **Bulut kaydı.** Kayıt dizesi dışa/içe aktarma (kopyalanabilir metin) en
+   ucuz çözüm; sonrasında hesap tabanlı senkron.
+10. **Sıralama tablosu.** En yüksek seviye / en çok yükseliş.
+11. **Sınıf başına özgün yetenek görselleri.** Şu anda dört sınıf aynı dört
     efekti paylaşıyor; yalnızca isimler farklı.
-16. **Ses tasarımı.** Osilatör bipleri yerine kısa örneklenmiş sesler.
+12. **Ses tasarımı.** Osilatör bipleri yerine kısa örneklenmiş sesler.
 
 ---
 
